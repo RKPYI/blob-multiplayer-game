@@ -2,11 +2,40 @@ const WebSocket = require('ws');
 const http = require('http');
 const express = require('express');
 const path = require('path');
+const https = require('https');
+const fs = require('fs');
 
 const app = express();
+
+// Serve static files from the React app
 app.use(express.static(path.join(__dirname, 'client/build')));
 
-const server = http.createServer(app);
+// Handle all other requests with React app
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'client/build', 'index.html'));
+});
+
+// Create server based on environment
+let server;
+if (process.env.NODE_ENV === 'production') {
+  // In production, we'll assume you've set up SSL certificates
+  try {
+    const options = {
+      key: fs.readFileSync('/etc/letsencrypt/live/game.randk.my.id/fullchain.pem'),
+      cert: fs.readFileSync('/etc/letsencrypt/live/game.randk.my.id/privkey.pem')
+    };
+    server = https.createServer(options, app);
+  } catch (error) {
+    console.error('Failed to load SSL certificates:', error);
+    console.log('Falling back to HTTP server');
+    server = http.createServer(app);
+  }
+} else {
+  // In development, use regular HTTP
+  server = http.createServer(app);
+}
+
+// Set up WebSocket server
 const wss = new WebSocket.Server({ server });
 
 // Store connected players
@@ -78,6 +107,7 @@ wss.on('connection', (ws) => {
   }
 });
 
+// Use the PORT environment variable if available
 const PORT = process.env.PORT || 8000;
 server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);

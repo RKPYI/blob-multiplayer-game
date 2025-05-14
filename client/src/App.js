@@ -35,8 +35,9 @@ function App() {
     e.preventDefault();
     if (username.trim() === '') return;
     
-    // Create WebSocket connection
-    const ws = new WebSocket(`ws://${window.location.hostname}:8000`);
+    // Create WebSocket connection with proper protocol based on current connection
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${protocol}//${window.location.host}`);
     wsRef.current = ws;
     
     ws.onopen = () => {
@@ -68,6 +69,11 @@ function App() {
     
     ws.onclose = () => {
       console.log('Disconnected from server');
+      setConnected(false);
+    };
+    
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
       setConnected(false);
     };
   };
@@ -139,7 +145,7 @@ function App() {
       x = Math.max(blobSize / 2, Math.min(window.innerWidth - blobSize / 2, x));
       y = Math.max(blobSize / 2, Math.min(window.innerHeight - blobSize / 2, y));
       
-      if (moved && wsRef.current) {
+      if (moved && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({
           type: 'move',
           x: x,
