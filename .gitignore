@@ -1,0 +1,7 @@
+# Node.js dependencies and build files
+node_modules/
+/client/node_modules/
+/client/build/
+npm-debug.log
+.env
+.DS_Store
