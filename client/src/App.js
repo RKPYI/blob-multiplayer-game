@@ -6,19 +6,25 @@ function App() {
   const [connected, setConnected] = useState(false);
   const [playerId, setPlayerId] = useState(null);
   const [players, setPlayers] = useState({});
+  const [pellets, setPellets] = useState({});
+  const [worldSize, setWorldSize] = useState({ width: 2000, height: 2000 });
   const [isMobile, setIsMobile] = useState(false);
   const [joystickActive, setJoystickActive] = useState(false);
   const [joystickPos, setJoystickPos] = useState({ x: 0, y: 0 });
   const [knobPos, setKnobPos] = useState({ x: 0, y: 0 });
   
+  // Camera position state (separate from player position)
+  const [cameraPosition, setCameraPosition] = useState({ x: 0, y: 0 });
+  
   const wsRef = useRef(null);
   const joystickRef = useRef(null);
-  const blobSize = 50; // Size of the blob in pixels
+  const animationFrameRef = useRef();
   const moveSpeed = 5; // Speed of movement in pixels
   const keysPressed = useRef({});
   const joystickSize = 120; // Size of the joystick base
   const knobSize = 50; // Size of the joystick knob
   const maxJoystickDistance = joystickSize / 2 - knobSize / 2;
+  const cameraSmoothing = 0.1; // Lower = smoother but slower camera (0.05-0.2 is a good range)
 
   // Detect mobile device
   useEffect(() => {
@@ -35,7 +41,6 @@ function App() {
     e.preventDefault();
     if (username.trim() === '') return;
     
-    // Create WebSocket connection
     const ws = new WebSocket(`ws://${window.location.hostname}:8000`);
     wsRef.current = ws;
     
@@ -54,11 +59,61 @@ function App() {
         case 'joined':
           setPlayerId(data.id);
           setPlayers(data.players);
+          setPellets(data.pellets);
+          if (data.worldSize) {
+            setWorldSize(data.worldSize);
+          }
+          // Initialize camera at player position
+          if (data.id && data.players[data.id]) {
+            setCameraPosition({
+              x: data.players[data.id].x,
+              y: data.players[data.id].y
+            });
+          }
           setConnected(true);
           break;
           
-        case 'players':
-          setPlayers(data.players);
+        case 'gameState':
+          // Handle incremental updates
+          setPlayers(prevPlayers => {
+            const updatedPlayers = { ...prevPlayers };
+            
+            // Add or update players
+            if (data.players) {
+              Object.keys(data.players).forEach(id => {
+                updatedPlayers[id] = data.players[id];
+              });
+            }
+            
+            // Remove players that are no longer visible
+            if (data.removedPlayers) {
+              data.removedPlayers.forEach(id => {
+                delete updatedPlayers[id];
+              });
+            }
+            
+            return updatedPlayers;
+          });
+          
+          setPellets(prevPellets => {
+            const updatedPellets = { ...prevPellets };
+            
+            // Add new pellets
+            if (data.pellets) {
+              Object.keys(data.pellets).forEach(id => {
+                updatedPellets[id] = data.pellets[id];
+              });
+            }
+            
+            // Remove consumed/out of range pellets
+            if (data.removedPellets) {
+              data.removedPellets.forEach(id => {
+                delete updatedPellets[id];
+              });
+            }
+            
+            return updatedPellets;
+          });
           break;
           
         default:
@@ -87,58 +142,42 @@ function App() {
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
 
-    // Game loop for smooth movement
     const gameLoop = setInterval(() => {
       if (!players[playerId]) return;
-      
       let x = players[playerId].x;
       let y = players[playerId].y;
       let moved = false;
-      
-      // Handle keyboard movement
+      const blobSize = players[playerId].size;
+
+      // Calculate movement vector
+      let moveVec = { x: 0, y: 0 };
       if (!isMobile) {
-        if (keysPressed.current['w'] || keysPressed.current['arrowup']) {
-          y -= moveSpeed;
-          moved = true;
-        }
-        if (keysPressed.current['s'] || keysPressed.current['arrowdown']) {
-          y += moveSpeed;
-          moved = true;
-        }
-        if (keysPressed.current['a'] || keysPressed.current['arrowleft']) {
-          x -= moveSpeed;
-          moved = true;
-        }
-        if (keysPressed.current['d'] || keysPressed.current['arrowright']) {
-          x += moveSpeed;
-          moved = true;
-        }
+        if (keysPressed.current['w'] || keysPressed.current['arrowup']) moveVec.y -= 1;
+        if (keysPressed.current['s'] || keysPressed.current['arrowdown']) moveVec.y += 1;
+        if (keysPressed.current['a'] || keysPressed.current['arrowleft']) moveVec.x -= 1;
+        if (keysPressed.current['d'] || keysPressed.current['arrowright']) moveVec.x += 1;
       }
-      
-      // Handle joystick movement for mobile
       if (isMobile && joystickActive) {
         const dx = knobPos.x - joystickPos.x;
         const dy = knobPos.y - joystickPos.y;
-        
-        // Calculate normalized direction vector
         const length = Math.sqrt(dx * dx + dy * dy);
         if (length > 0) {
-          const normalized = {
-            x: dx / length,
-            y: dy / length
-          };
-          
-          // Apply movement based on joystick direction
-          x += normalized.x * moveSpeed;
-          y += normalized.y * moveSpeed;
-          moved = true;
+          moveVec.x += dx / length;
+          moveVec.y += dy / length;
         }
       }
-      
-      // Keep player within bounds
-      x = Math.max(blobSize / 2, Math.min(window.innerWidth - blobSize / 2, x));
-      y = Math.max(blobSize / 2, Math.min(window.innerHeight - blobSize / 2, y));
-      
+      // Normalize movement vector
+      const length = Math.sqrt(moveVec.x * moveVec.x + moveVec.y * moveVec.y);
+      if (length > 0) {
+        moveVec.x /= length;
+        moveVec.y /= length;
+        x += moveVec.x * moveSpeed;
+        y += moveVec.y * moveSpeed;
+        moved = true;
+      }
+      // Keep player within world bounds
+      x = Math.max(blobSize / 2, Math.min(worldSize.width - blobSize / 2, x));
+      y = Math.max(blobSize / 2, Math.min(worldSize.height - blobSize / 2, y));
       if (moved && wsRef.current) {
         wsRef.current.send(JSON.stringify({
           type: 'move',
@@ -146,14 +185,42 @@ function App() {
           y: y
         }));
       }
-    }, 16); // ~60fps
+    }, 16);
 
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
       clearInterval(gameLoop);
     };
-  }, [connected, playerId, players, isMobile, joystickActive, joystickPos, knobPos]);
+  }, [connected, playerId, players, isMobile, joystickActive, joystickPos, knobPos, worldSize]);
+
+  // Smooth camera movement using requestAnimationFrame
+  useEffect(() => {
+    if (!connected || !playerId) return;
+    
+    const updateCamera = () => {
+      if (players[playerId]) {
+        const targetX = players[playerId].x;
+        const targetY = players[playerId].y;
+        
+        // Interpolate between current camera position and target position
+        setCameraPosition(prevPos => ({
+          x: prevPos.x + (targetX - prevPos.x) * cameraSmoothing,
+          y: prevPos.y + (targetY - prevPos.y) * cameraSmoothing
+        }));
+      }
+      
+      animationFrameRef.current = requestAnimationFrame(updateCamera);
+    };
+    
+    animationFrameRef.current = requestAnimationFrame(updateCamera);
+    
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    };
+  }, [connected, playerId, players, cameraSmoothing]);
 
   // Touch event handlers for joystick
   const handleTouchStart = (e) => {
@@ -163,7 +230,6 @@ function App() {
     const touch = e.touches[0];
     const rect = joystickRef.current.getBoundingClientRect();
     
-    // Center position of the joystick
     const joystickCenter = {
       x: rect.left + rect.width / 2,
       y: rect.top + rect.height / 2
@@ -183,12 +249,10 @@ function App() {
     e.preventDefault();
     const touch = e.touches[0];
     
-    // Calculate distance from center
     const dx = touch.clientX - joystickPos.x;
     const dy = touch.clientY - joystickPos.y;
     const distance = Math.sqrt(dx * dx + dy * dy);
     
-    // Constrain knob position to the joystick radius
     if (distance > maxJoystickDistance) {
       const angle = Math.atan2(dy, dx);
       setKnobPos({
@@ -204,7 +268,6 @@ function App() {
   };
 
   const handleTouchEnd = () => {
-    // Reset joystick to center
     setJoystickActive(false);
     setKnobPos(joystickPos);
   };
@@ -217,6 +280,43 @@ function App() {
       }
     };
   }, []);
+
+  // Calculate camera position
+  const cameraStyle = () => {
+    if (!connected) return {};
+    
+    // Use the smooth camera position instead of directly using player position
+    const offsetX = Math.min(0, Math.max(window.innerWidth / 2 - cameraPosition.x, window.innerWidth - worldSize.width));
+    const offsetY = Math.min(0, Math.max(window.innerHeight / 2 - cameraPosition.y, window.innerHeight - worldSize.height));
+    
+    return {
+      transform: `translate3d(${offsetX}px, ${offsetY}px, 0)`,
+      width: `${worldSize.width}px`,
+      height: `${worldSize.height}px`,
+      position: 'absolute',
+      backgroundSize: '50px 50px',
+      backgroundImage: 'linear-gradient(to right, #ccc 1px, transparent 1px), linear-gradient(to bottom, #ccc 1px, transparent 1px)',
+      willChange: 'transform', // Optimization for smoother animations
+      backfaceVisibility: 'hidden', // Reduces flickering on some browsers
+    };
+  };
+
+  // Get sorted players for leaderboard
+  const getLeaderboard = () => {
+    const playersList = Object.values(players);
+    
+    // Sort players by size (score) in descending order
+    const sortedPlayers = [...playersList].sort((a, b) => b.size - a.size);
+    
+    // Return top 10 players
+    return sortedPlayers.slice(0, 10);
+  };
+
+  // Count visible pellets and objects (for debugging)
+  const visibleEntitiesCount = () => ({
+    players: Object.keys(players).length,
+    pellets: Object.keys(pellets).length
+  });
 
   return (
     <div className="game-container">
@@ -233,69 +333,115 @@ function App() {
         </form>
       ) : (
         <>
-          {Object.values(players).map((player) => (
-            <div
-              key={player.id}
-              className="player"
-              style={{
-                width: `${blobSize}px`,
-                height: `${blobSize}px`,
-                backgroundColor: player.color,
-                transform: `translate(${player.x - blobSize / 2}px, ${player.y - blobSize / 2}px)`,
-                fontSize: `${Math.min(16, blobSize / 3)}px`,
-              }}
-            >
-              {player.username}
+          {/* Leaderboard Component */}
+          <div className="leaderboard">
+            <h3>Leaderboard</h3>
+            <table className="leaderboard-table">
+              <thead>
+                <tr>
+                  <th className="rank">No</th>
+                  <th className="username">User</th>
+                  <th className="score">Score</th>
+                </tr>
+              </thead>
+              <tbody>
+                {getLeaderboard().map((player, index) => (
+                  <tr 
+                    key={player.id} 
+                    className={player.id === playerId ? "current-player" : ""}
+                  >
+                    <td className="rank">{index + 1}</td>
+                    <td className="username">{player.username}</td>
+                    <td className="score">{Math.floor(player.size)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="entities-count" style={{ fontSize: '10px', color: '#888', marginTop: '5px' }}>
+              Visible objects: P:{visibleEntitiesCount().players} F:{visibleEntitiesCount().pellets}
             </div>
-          ))}
+          </div>
           
-          {/* Mobile Joystick Control */}
-          {isMobile && connected && (
-            <div 
-              className="joystick-container"
-              ref={joystickRef}
-              onTouchStart={handleTouchStart}
-              onTouchMove={handleTouchMove}
-              onTouchEnd={handleTouchEnd}
-              style={{
-                width: `${joystickSize}px`,
-                height: `${joystickSize}px`,
-                bottom: '20px', 
-                left: '20px',
-                position: 'absolute',
-              }}
-            >
-              <div 
-                className="joystick-base"
+          <div className="camera" style={cameraStyle()}>
+            {Object.values(players).map((player) => (
+              <div
+                key={player.id}
+                className="player"
                 style={{
-                  width: '100%',
-                  height: '100%',
+                  width: `${player.size}px`,
+                  height: `${player.size}px`,
+                  backgroundColor: player.color,
+                  transform: `translate(${player.x - player.size / 2}px, ${player.y - player.size / 2}px)`,
+                  fontSize: `${Math.min(16, player.size / 3)}px`,
+                }}
+              >
+                {player.username}
+              </div>
+            ))}
+
+            {Object.values(pellets).map((pellet) => (
+              <div
+                key={pellet.id}
+                className="pellet"
+                style={{
+                  width: `${pellet.size}px`,
+                  height: `${pellet.size}px`,
+                  backgroundColor: '#FFD700', // Gold color for pellets
                   borderRadius: '50%',
-                  backgroundColor: 'rgba(255, 255, 255, 0.3)',
-                  border: '2px solid rgba(255, 255, 255, 0.5)',
-                  display: 'flex',
-                  justifyContent: 'center',
-                  alignItems: 'center',
-                  position: 'relative',
+                  position: 'absolute',
+                  transform: `translate(${pellet.x - pellet.size / 2}px, ${pellet.y - pellet.size / 2}px)`,
+                }}
+              />
+            ))}
+
+            {isMobile && connected && (
+              <div 
+                className="joystick-container"
+                ref={joystickRef}
+                onTouchStart={handleTouchStart}
+                onTouchMove={handleTouchMove}
+                onTouchEnd={handleTouchEnd}
+                style={{
+                  width: `${joystickSize}px`,
+                  height: `${joystickSize}px`,
+                  bottom: '20px', 
+                  left: '20px',
+                  position: 'fixed', // Changed to fixed so it stays in view
+                  zIndex: 1000, // Ensure it's above other elements
                 }}
               >
                 <div 
-                  className="joystick-knob"
+                  className="joystick-base"
                   style={{
-                    width: `${knobSize}px`,
-                    height: `${knobSize}px`,
+                    width: '100%',
+                    height: '100%',
                     borderRadius: '50%',
-                    backgroundColor: 'rgba(255, 255, 255, 0.8)',
-                    position: 'absolute',
-                    transform: joystickActive
-                      ? `translate(${knobPos.x - joystickPos.x}px, ${knobPos.y - joystickPos.y}px)`
-                      : 'translate(0, 0)',
-                    transition: joystickActive ? 'none' : 'transform 0.2s ease',
+                    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+                    border: '2px solid rgba(255, 255, 255, 0.5)',
+                    display: 'flex',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    position: 'relative',
                   }}
-                />
+                >
+                  <div 
+                    className="joystick-knob"
+                    style={{
+                      width: `${knobSize}px`,
+                      height: `${knobSize}px`,
+                      borderRadius: '50%',
+                      backgroundColor: 'rgba(255, 255, 255, 0.8)',
+                      position: 'absolute',
+                      transform: joystickActive
+                        ? `translate(${knobPos.x - joystickPos.x}px, ${knobPos.y - joystickPos.y}px)`
+                        : 'translate(0, 0)',
+                      transition: joystickActive ? 'none' : 'transform 0.2s ease',
+                    }}
+                  />
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </>
       )}
     </div>
